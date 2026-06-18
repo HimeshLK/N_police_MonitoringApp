@@ -76,7 +76,7 @@ function ConfigFormInner() {
       setApiError(null);
 
       try {
-        const cfg = await getConfig(id);
+        const cfg = await getConfig(id as string);
 
         setConfigName(cfg.config_name);
         setAppName(cfg.app_name);
@@ -85,7 +85,7 @@ function ConfigFormInner() {
         setApiKey(cfg.api_key ?? '');
         setEnabled(cfg.enabled);
 
-        const selectedIds = await getSelectedScreenIds(id);
+        const selectedIds = await getSelectedScreenIds(id as string);
         setSelectedScreenIds(selectedIds);
       } catch (e) {
         setApiError((e as Error).message);
