@@ -92,3 +92,57 @@ export async function deleteRoute(id: string): Promise<void> {
   const { error } = await supabase.from('route_allocations').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
+
+export type DashboardRoute = {
+  id: string;
+  schedule_id: string;
+  screen_id: string;
+  title: string;
+  description: string | null;
+  location_name: string;
+
+  start_lat: number;
+  start_lng: number;
+  end_lat: number;
+  end_lng: number;
+
+  start_label: string | null;
+  end_label: string | null;
+
+  center_lat: number;
+  center_lng: number;
+
+  zoom_level: number;
+  enabled: boolean;
+  update_frequency_ms: number;
+};
+
+export async function getDashboardRoutes(): Promise<DashboardRoute[]> {
+  const { data, error } = await supabase
+    .from('route_allocations')
+    .select(`
+      id,
+      schedule_id,
+      screen_id,
+      title,
+      description,
+      location_name,
+      start_lat,
+      start_lng,
+      end_lat,
+      end_lng,
+      start_label,
+      end_label,
+      center_lat,
+      center_lng,
+      zoom_level,
+      enabled,
+      update_frequency_ms
+    `)
+    .eq('enabled', true)
+    .order('screen_id', { ascending: true });
+
+  if (error) throw error;
+
+  return data || [];
+}
