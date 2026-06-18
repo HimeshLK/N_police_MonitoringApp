@@ -33,6 +33,13 @@ type RouteAllocation = {
   schedules: Schedule | Schedule[] | null;
 };
 
+type DashboardConfigScreen = {
+  id: string;
+  sort_order: number;
+  enabled: boolean;
+  route_allocations: RouteAllocation | RouteAllocation[] | null;
+};
+
 function getSingleQueryValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
@@ -53,10 +60,7 @@ function formatTime(value: string): string {
 }
 
 function durationMillis(start: string, end: string): number {
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-
-  return endDate.getTime() - startDate.getTime();
+  return new Date(end).getTime() - new Date(start).getTime();
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -126,71 +130,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    let routeQuery = supabase
-      .from('route_allocations')
+    const { data: configScreens, error: configScreensError } = await supabase
+      .from('dashboard_config_screens')
       .select(`
         id,
-        screen_id,
-        title,
-        description,
-        location_name,
-        center_lat,
-        center_lng,
-        zoom_level,
+        sort_order,
         enabled,
-        map_params,
-        update_frequency_ms,
-        schedules (
+        route_allocations (
           id,
-          name,
-          start_time,
-          end_time
+          screen_id,
+          title,
+          description,
+          location_name,
+          center_lat,
+          center_lng,
+          zoom_level,
+          enabled,
+          map_params,
+          update_frequency_ms,
+          schedules (
+            id,
+            name,
+            start_time,
+            end_time
+          )
         )
       `)
-      .eq('location_name', locationFilter || config.location)
-      .order('screen_id', { ascending: true });
+      .eq('dashboard_config_id', config.id)
+      .order('sort_order', { ascending: true })
+      .returns<DashboardConfigScreen[]>();
 
-    if (!includeDisabled) {
-      routeQuery = routeQuery.eq('enabled', true);
-    }
-
-    const { data: routes, error: routesError } = await routeQuery.returns<RouteAllocation[]>();
-
-    if (routesError) {
-      console.error('Route allocations query error:', routesError);
+    if (configScreensError) {
+      console.error('Dashboard config screens query error:', configScreensError);
 
       return res.status(500).json({
         error: 'INTERNAL_SERVER_ERROR',
-        message: 'Unable to generate dashboard config.',
+        message: 'Unable to generate dashboard config screens.',
       });
     }
 
-    const screens = (routes || []).map((route) => {
-      const schedule = Array.isArray(route.schedules)
-        ? route.schedules[0]
-        : route.schedules;
+    const screens = (configScreens || [])
+      .map((configScreen) => {
+        const route = Array.isArray(configScreen.route_allocations)
+          ? configScreen.route_allocations[0]
+          : configScreen.route_allocations;
 
-      return {
-        screenId: route.screen_id,
-        title: route.title,
-        description: route.description || '',
-        schedule: {
-          start: schedule ? formatTime(schedule.start_time) : '',
-          end: schedule ? formatTime(schedule.end_time) : '',
-          millis: schedule
-            ? durationMillis(schedule.start_time, schedule.end_time)
-            : 0,
-        },
-        enabled: route.enabled,
-        mapConfig: {
-          lat: route.center_lat,
-          lng: route.center_lng,
-          zoom: route.zoom_level,
-          params: route.map_params || [],
-          updateFrequency: route.update_frequency_ms,
-        },
-      };
-    });
+        if (!route) return null;
+
+        if (!includeDisabled && (!configScreen.enabled || !route.enabled)) {
+          return null;
+        }
+
+        const schedule = Array.isArray(route.schedules)
+          ? route.schedules[0]
+          : route.schedules;
+
+        return {
+          screenId: route.screen_id,
+          title: route.title,
+          description: route.description || '',
+          schedule: {
+            start: schedule ? formatTime(schedule.start_time) : '',
+            end: schedule ? formatTime(schedule.end_time) : '',
+            millis: schedule
+              ? durationMillis(schedule.start_time, schedule.end_time)
+              : 0,
+          },
+          enabled: route.enabled && configScreen.enabled,
+          mapConfig: {
+            lat: route.center_lat,
+            lng: route.center_lng,
+            zoom: route.zoom_level,
+            params: route.map_params || [],
+            updateFrequency: route.update_frequency_ms,
+          },
+        };
+      })
+      .filter(Boolean);
 
     return res.status(200).json({
       configName: config.config_name,
