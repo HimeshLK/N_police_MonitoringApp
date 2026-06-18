@@ -1,131 +1,193 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createClient } from '@supabase/supabase-js';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Minimal Vercel request/response shapes — avoids @vercel/node type dependency
-interface VercelRequest extends IncomingMessage {
-  query: Record<string, string | string[]>;
+type DashboardConfig = {
+  id: string;
+  config_name: string;
+  app_name: string;
+  config_version: string;
+  location: string;
+  api_key: string | null;
+  enabled: boolean;
+};
+
+type Schedule = {
+  id: string;
+  name: string;
+  start_time: string;
+  end_time: string;
+};
+
+type RouteAllocation = {
+  id: string;
+  screen_id: string;
+  title: string;
+  description: string | null;
+  location_name: string;
+  center_lat: number;
+  center_lng: number;
+  zoom_level: number;
+  enabled: boolean;
+  map_params: unknown[] | null;
+  update_frequency_ms: number;
+  schedules: Schedule | Schedule[] | null;
+};
+
+function getSingleQueryValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
-interface VercelResponse extends ServerResponse {
-  status(code: number): VercelResponse;
-  json(body: unknown): void;
+
+function getSingleHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
-// Server-side only — SUPABASE_SERVICE_ROLE_KEY is never sent to the browser
-const supabase = createClient(
-  process.env['SUPABASE_URL']!,
-  process.env['SUPABASE_SERVICE_ROLE_KEY']!
-);
-
-function formatTime(isoString: string): string {
-  return new Date(isoString).toLocaleTimeString('en-US', {
+function formatTime(value: string): string {
+  return new Date(value).toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
+    timeZone: 'Asia/Colombo',
   });
 }
 
 function durationMillis(start: string, end: string): number {
-  return new Date(end).getTime() - new Date(start).getTime();
-}
+  const startDate = new Date(start);
+  const endDate = new Date(end);
 
-interface RouteRow {
-  screen_id: string;
-  title: string;
-  description: string | null;
-  center_lat: number;
-  center_lng: number;
-  zoom_level: number;
-  map_params: unknown[];
-  update_frequency_ms: number;
-  enabled: boolean;
-  // Supabase returns joined rows as an array for to-one relations
-  schedules: Array<{ start_time: string; end_time: string }> | null;
+  return endDate.getTime() - startDate.getTime();
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'METHOD_NOT_ALLOWED', message: 'Only GET is supported.' });
+    return res.status(405).json({
+      error: 'METHOD_NOT_ALLOWED',
+      message: 'Only GET requests are allowed.',
+    });
   }
 
-  const configName = Array.isArray(req.query['configName'])
-    ? req.query['configName'][0]
-    : (req.query['configName'] ?? '');
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const configApiKey = process.env.CONFIG_API_KEY;
 
-  const includeDisabled =
-    (Array.isArray(req.query['includeDisabled'])
-      ? req.query['includeDisabled'][0]
-      : req.query['includeDisabled']) === 'true';
+  if (!supabaseUrl || !serviceRoleKey) {
+    return res.status(500).json({
+      error: 'SERVER_CONFIG_MISSING',
+      message: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.',
+    });
+  }
 
   try {
-    // 1. Fetch config — must exist and be enabled
+    if (configApiKey && configApiKey.trim().length > 0) {
+      const requestApiKey = getSingleHeaderValue(req.headers['x-config-api-key']);
+
+      if (requestApiKey !== configApiKey) {
+        return res.status(401).json({
+          error: 'UNAUTHORIZED',
+          message: 'Invalid config API key.',
+        });
+      }
+    }
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+    const configName = getSingleQueryValue(req.query.configName);
+    const locationFilter = getSingleQueryValue(req.query.location);
+    const includeDisabled = getSingleQueryValue(req.query.includeDisabled) === 'true';
+
+    if (!configName) {
+      return res.status(400).json({
+        error: 'INVALID_CONFIG_NAME',
+        message: 'Config name is required.',
+      });
+    }
+
     const { data: config, error: configError } = await supabase
       .from('dashboard_configs')
       .select('*')
       .eq('config_name', configName)
       .eq('enabled', true)
-      .single();
+      .maybeSingle<DashboardConfig>();
 
-    if (configError || !config) {
+    if (configError) {
+      console.error('Dashboard config query error:', configError);
+
+      return res.status(500).json({
+        error: 'INTERNAL_SERVER_ERROR',
+        message: 'Unable to read dashboard config.',
+      });
+    }
+
+    if (!config) {
       return res.status(404).json({
         error: 'CONFIG_NOT_FOUND',
         message: 'Dashboard config was not found.',
       });
     }
 
-    // 2. Fetch route allocations joined with schedules
-    let query = supabase
+    let routeQuery = supabase
       .from('route_allocations')
       .select(`
+        id,
         screen_id,
         title,
         description,
+        location_name,
         center_lat,
         center_lng,
         zoom_level,
+        enabled,
         map_params,
         update_frequency_ms,
-        enabled,
-        schedules ( start_time, end_time )
+        schedules (
+          id,
+          name,
+          start_time,
+          end_time
+        )
       `)
-      .eq('location_name', config.location as string)
-      .order('screen_id');
+      .eq('location_name', locationFilter || config.location)
+      .order('screen_id', { ascending: true });
 
     if (!includeDisabled) {
-      query = query.eq('enabled', true);
+      routeQuery = routeQuery.eq('enabled', true);
     }
 
-    const { data: routes, error: routesError } = await query;
+    const { data: routes, error: routesError } = await routeQuery.returns<RouteAllocation[]>();
 
     if (routesError) {
-      console.error('Routes fetch error:', routesError.message);
+      console.error('Route allocations query error:', routesError);
+
       return res.status(500).json({
         error: 'INTERNAL_SERVER_ERROR',
         message: 'Unable to generate dashboard config.',
       });
     }
 
-    // 3. Map to response shape
-    const screens = (routes ?? []).map((r: RouteRow) => {
-      // Supabase returns the joined schedule as a single-element array
-      const schedule = Array.isArray(r.schedules) ? r.schedules[0] : r.schedules;
-      const startTime = schedule?.start_time ?? '';
-      const endTime = schedule?.end_time ?? '';
+    const screens = (routes || []).map((route) => {
+      const schedule = Array.isArray(route.schedules)
+        ? route.schedules[0]
+        : route.schedules;
+
       return {
-        screenId: r.screen_id,
-        title: r.title,
-        description: r.description ?? '',
+        screenId: route.screen_id,
+        title: route.title,
+        description: route.description || '',
         schedule: {
-          start: startTime ? formatTime(startTime) : '',
-          end: endTime ? formatTime(endTime) : '',
-          millis: startTime && endTime ? durationMillis(startTime, endTime) : 0,
+          start: schedule ? formatTime(schedule.start_time) : '',
+          end: schedule ? formatTime(schedule.end_time) : '',
+          millis: schedule
+            ? durationMillis(schedule.start_time, schedule.end_time)
+            : 0,
         },
-        enabled: r.enabled,
+        enabled: route.enabled,
         mapConfig: {
-          lat: r.center_lat,
-          lng: r.center_lng,
-          zoom: r.zoom_level,
-          params: r.map_params ?? [],
-          updateFrequency: r.update_frequency_ms,
+          lat: route.center_lat,
+          lng: route.center_lng,
+          zoom: route.zoom_level,
+          params: route.map_params || [],
+          updateFrequency: route.update_frequency_ms,
         },
       };
     });
@@ -135,11 +197,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       appName: config.app_name,
       configVersion: config.config_version,
       location: config.location,
-      apiKey: config.api_key ?? '',
+      apiKey: config.api_key || '',
       screens,
     });
-  } catch (err) {
-    console.error('Config endpoint error:', err);
+  } catch (error) {
+    console.error('Dashboard config API error:', error);
+
     return res.status(500).json({
       error: 'INTERNAL_SERVER_ERROR',
       message: 'Unable to generate dashboard config.',

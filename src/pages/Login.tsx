@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../api/supabase';
+import policeBadge from '../assets/policelogo.png';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -21,7 +22,7 @@ export default function Login() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(160deg, var(--police-navy) 0%, var(--police-navy2) 55%, #1a3a6e 100%)',
+      background: 'linear-gradient(160deg, var(--police-navy) 0%, var(--police-navy2) 55%, rgb(33, 67, 121) 100%)',
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       padding: '24px', position: 'relative', overflow: 'hidden',
     }}>
@@ -36,7 +37,7 @@ export default function Login() {
       {/* decorative top stripe */}
       <div style={{
         position: 'absolute', top: 0, left: 0, right: 0, height: '4px',
-        background: 'linear-gradient(90deg, var(--police-gold), var(--police-gold-l), var(--police-gold))',
+        background: 'white',
       }} />
 
       {/* Card */}
@@ -49,7 +50,7 @@ export default function Login() {
         padding: '48px 44px',
         width: '100%',
         maxWidth: '420px',
-        boxShadow: '0 32px 80px rgba(0,0,0,0.45)',
+        boxShadow: '0 32px 80px rgba(0, 0, 0, 0.45)',
         position: 'relative',
         zIndex: 1,
       }}>
@@ -59,22 +60,12 @@ export default function Login() {
           {/* Police badge SVG */}
           <div style={{
             width: '80px', height: '80px',
-            background: 'linear-gradient(145deg, var(--police-gold), var(--police-gold-l))',
+            background: 'white',
             borderRadius: '50%',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 4px 24px rgba(200,169,81,0.4)',
+            boxShadow: '0 4px 24px rgba(189, 189, 189, 0.4)',
           }}>
-            <svg width="46" height="46" viewBox="0 0 46 46" fill="none">
-              {/* Star badge shape */}
-              <polygon
-                points="23,3 27.5,16 41,16 30.5,24.5 34.5,38 23,30 11.5,38 15.5,24.5 5,16 18.5,16"
-                stroke="#0D1B3E" strokeWidth="1.5" fill="#0D1B3E" strokeLinejoin="round"
-              />
-              {/* Inner badge ring */}
-              <circle cx="23" cy="22" r="8.5" stroke="rgba(200,169,81,0.9)" strokeWidth="1.5" fill="none" />
-              {/* Centre dot */}
-              <circle cx="23" cy="22" r="3" fill="var(--police-gold)" />
-            </svg>
+            <img src={policeBadge} alt="Police Badge" style={{ width: '40px', height: '50px' }} />
           </div>
 
           <div style={{ textAlign: 'center' }}>
@@ -172,7 +163,7 @@ export default function Login() {
               marginTop: '4px',
               padding: '13px',
               background: loading
-                ? 'rgba(200,169,81,0.5)'
+                ? 'rgba(134, 99, 0, 0.5)'
                 : 'linear-gradient(135deg, var(--police-gold), var(--police-gold-l))',
               color: '#0D1B3E',
               border: 'none',
@@ -182,7 +173,7 @@ export default function Login() {
               cursor: loading ? 'not-allowed' : 'pointer',
               letterSpacing: '0.04em',
               transition: 'opacity 0.15s ease, transform 0.1s ease',
-              boxShadow: '0 4px 20px rgba(200,169,81,0.3)',
+              boxShadow: '0 4px 20px rgba(255, 255, 255, 0.3)',
             }}
             onMouseEnter={(e) => { if (!loading) e.currentTarget.style.opacity = '0.9'; }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
@@ -192,13 +183,13 @@ export default function Login() {
         </form>
 
         {/* Footer */}
-        <p style={{ marginTop: '28px', textAlign: 'center', fontSize: '11px', color: 'rgba(255,255,255,0.25)' }}>
+        <p style={{ marginTop: '28px', textAlign: 'center', fontSize: '11px', color: 'rgba(255, 255, 255, 0.25)' }}>
           Authorised personnel only &nbsp;|&nbsp; Sri Lanka Police
         </p>
       </div>
 
       {/* Bottom bar */}
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '4px', background: 'linear-gradient(90deg, var(--police-gold), var(--police-gold-l), var(--police-gold))' }} />
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '4px', background: 'white' }} />
     </div>
   );
 }
