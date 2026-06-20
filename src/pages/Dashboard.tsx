@@ -2,16 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   GoogleMap,
   MarkerF,
-  PolylineF,
   useGoogleMap,
   useJsApiLoader,
 } from '@react-google-maps/api';
 import {
   getDashboardCounts,
-  getDashboardRoutes,
   type DashboardCounts,
-  type DashboardRoute,
 } from '../api/dashboardApi';
+import {
+  getDashboardRoutes,
+  type DashboardRoute,
+} from '../api/routesApi';
+import {
+  getOfficerLocationsByRange,
+  type OfficerLocation,
+} from '../api/officerLocationsApi';
 import { calculateMidpoint } from '../utils/coordinates';
 
 const defaultCenter = {
@@ -24,6 +29,9 @@ const mapContainerStyle = {
   height: '100%',
   borderRadius: '18px',
 };
+
+const OFFICER_LOCATION_LOOKBACK_SECONDS = 30 * 60;
+const DEFAULT_OFFICER_REFRESH_MS = 15000;
 
 function TrafficLayerOverlay({ enabled }: { enabled: boolean }) {
   const map = useGoogleMap();
@@ -40,39 +48,6 @@ function TrafficLayerOverlay({ enabled }: { enabled: boolean }) {
   }, [map, enabled]);
 
   return null;
-}
-
-function getSingleValue<T>(value: T | T[] | null): T | null {
-  if (Array.isArray(value)) return value[0] || null;
-  return value;
-}
-
-function isScheduleActiveNow(startTime?: string, endTime?: string): boolean {
-  if (!startTime || !endTime) return false;
-
-  const now = new Date();
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const startMinutes = start.getHours() * 60 + start.getMinutes();
-  const endMinutes = end.getHours() * 60 + end.getMinutes();
-
-  if (startMinutes <= endMinutes) {
-    return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
-  }
-
-  return nowMinutes >= startMinutes || nowMinutes <= endMinutes;
-}
-
-function formatTime(value?: string): string {
-  if (!value) return '-';
-
-  return new Date(value).toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
 }
 
 function KpiCard({
@@ -133,6 +108,25 @@ function KpiCard({
   );
 }
 
+function formatDateTime(value?: string): string {
+  if (!value) return '-';
+
+  return new Date(value).toLocaleString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+}
+
+function getOfficerDisplayName(officer: OfficerLocation): string {
+  const name = `${officer.officer_fname || ''} ${
+    officer.officer_lname || ''
+  }`.trim();
+
+  return name || officer.officer_external_id;
+}
+
 export default function Dashboard() {
   const [routes, setRoutes] = useState<DashboardRoute[]>([]);
   const [counts, setCounts] = useState<DashboardCounts>({
@@ -144,10 +138,26 @@ export default function Dashboard() {
 
   const [selectedRouteId, setSelectedRouteId] = useState('');
   const [trafficEnabled, setTrafficEnabled] = useState(true);
+  const [officerLayerEnabled, setOfficerLayerEnabled] = useState(true);
+
+  const [officerLocations, setOfficerLocations] = useState<OfficerLocation[]>(
+    []
+  );
+  const [officerLocationsLoading, setOfficerLocationsLoading] = useState(false);
+  const [officerLocationError, setOfficerLocationError] = useState<string | null>(
+    null
+  );
+  const [lastOfficerRefreshAt, setLastOfficerRefreshAt] = useState<string | null>(
+    null
+  );
+
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
+
+  const trackingConfigName =
+    import.meta.env.VITE_TRACKING_CONFIG_NAME || 'cmb_pilot_config';
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'police-dashboard-map',
@@ -185,35 +195,6 @@ export default function Dashboard() {
     return routes.find((route) => route.id === selectedRouteId) || null;
   }, [routes, selectedRouteId]);
 
-  const selectedSchedule = useMemo(() => {
-    if (!selectedRoute) return null;
-    return getSingleValue(selectedRoute.schedules);
-  }, [selectedRoute]);
-
-  const selectedAssignments = useMemo(() => {
-    return selectedRoute?.route_officer_assignments || [];
-  }, [selectedRoute]);
-
-  const selectedOnDutyOfficers = useMemo(() => {
-    return selectedAssignments.filter((assignment) => {
-      return assignment.status === 'on_duty';
-    });
-  }, [selectedAssignments]);
-
-  const totalOnDutyOfficers = useMemo(() => {
-    const officerIds = new Set<string>();
-
-    routes.forEach((route) => {
-      route.route_officer_assignments?.forEach((assignment) => {
-        if (assignment.status === 'on_duty') {
-          officerIds.add(assignment.officer_id);
-        }
-      });
-    });
-
-    return officerIds.size;
-  }, [routes]);
-
   const midpoint = useMemo(() => {
     if (!selectedRoute) return defaultCenter;
 
@@ -239,23 +220,86 @@ export default function Dashboard() {
       }
     : null;
 
-  const routePath =
-    startPoint && endPoint
-      ? [
-          {
-            lat: startPoint.lat,
-            lng: startPoint.lng,
-          },
-          {
-            lat: endPoint.lat,
-            lng: endPoint.lng,
-          },
-        ]
-      : [];
+  const officerRefreshMs = useMemo(() => {
+    const routeRefresh = Number(selectedRoute?.update_frequency_ms);
 
-  const selectedRouteActive = selectedSchedule
-    ? isScheduleActiveNow(selectedSchedule.start_time, selectedSchedule.end_time)
-    : false;
+    if (Number.isFinite(routeRefresh) && routeRefresh >= 5000) {
+      return routeRefresh;
+    }
+
+    return DEFAULT_OFFICER_REFRESH_MS;
+  }, [selectedRoute]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let intervalId: number | undefined;
+
+    async function loadOfficerLocations() {
+      if (!selectedRoute || !officerLayerEnabled) {
+        setOfficerLocations([]);
+        setOfficerLocationError(null);
+        return;
+      }
+
+      setOfficerLocationsLoading(true);
+      setOfficerLocationError(null);
+
+      try {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const startSeconds = nowSeconds - OFFICER_LOCATION_LOOKBACK_SECONDS;
+
+        const locations = await getOfficerLocationsByRange({
+          reference: selectedRoute.screen_id,
+          configName: trackingConfigName,
+          start: startSeconds,
+          end: nowSeconds,
+        });
+
+        if (!cancelled) {
+          setOfficerLocations(locations);
+          setLastOfficerRefreshAt(new Date().toISOString());
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Unable to load officer layer:', error);
+          setOfficerLocations([]);
+          setOfficerLocationError((error as Error).message);
+        }
+      } finally {
+        if (!cancelled) {
+          setOfficerLocationsLoading(false);
+        }
+      }
+    }
+
+    loadOfficerLocations();
+
+    if (selectedRoute && officerLayerEnabled) {
+      intervalId = window.setInterval(loadOfficerLocations, officerRefreshMs);
+    }
+
+    return () => {
+      cancelled = true;
+
+      if (intervalId) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [selectedRoute, officerLayerEnabled, officerRefreshMs, trackingConfigName]);
+
+  const latestOfficerLocations = useMemo(() => {
+    const latestByOfficer = new Map<string, OfficerLocation>();
+
+    officerLocations.forEach((location) => {
+      const existing = latestByOfficer.get(location.officer_external_id);
+
+      if (!existing || location.event_timestamp > existing.event_timestamp) {
+        latestByOfficer.set(location.officer_external_id, location);
+      }
+    });
+
+    return Array.from(latestByOfficer.values());
+  }, [officerLocations]);
 
   if (loading) {
     return <p style={{ color: 'var(--text-secondary)' }}>Loading dashboard...</p>;
@@ -297,7 +341,8 @@ export default function Dashboard() {
               fontSize: '13px',
             }}
           >
-            One-glance view of active routes, duty strength, and live traffic.
+            One-glance view of active routes, live traffic, and officer GPS
+            layer.
           </p>
         </div>
 
@@ -306,12 +351,26 @@ export default function Dashboard() {
             fontSize: '12px',
             color: 'var(--text-secondary)',
             textAlign: 'right',
+            lineHeight: 1.7,
           }}
         >
-          Live traffic layer:{' '}
-          <strong style={{ color: trafficEnabled ? '#15803d' : '#b91c1c' }}>
-            {trafficEnabled ? 'ON' : 'OFF'}
-          </strong>
+          <div>
+            Live traffic:{' '}
+            <strong style={{ color: trafficEnabled ? '#15803d' : '#b91c1c' }}>
+              {trafficEnabled ? 'ON' : 'OFF'}
+            </strong>
+          </div>
+
+          <div>
+            Officer layer:{' '}
+            <strong
+              style={{
+                color: officerLayerEnabled ? '#15803d' : '#b91c1c',
+              }}
+            >
+              {officerLayerEnabled ? 'ON' : 'OFF'}
+            </strong>
+          </div>
         </div>
       </div>
 
@@ -329,6 +388,20 @@ export default function Dashboard() {
         </div>
       )}
 
+      {officerLocationError && (
+        <div
+          style={{
+            padding: '10px 12px',
+            borderRadius: '12px',
+            background: 'rgba(239, 68, 68, 0.08)',
+            color: 'var(--danger)',
+            fontSize: '13px',
+          }}
+        >
+          Officer layer error: {officerLocationError}
+        </div>
+      )}
+
       <div
         style={{
           display: 'grid',
@@ -337,15 +410,19 @@ export default function Dashboard() {
         }}
       >
         <KpiCard
-          label="Officers On Duty"
-          value={totalOnDutyOfficers}
-          hint="Assigned to active route screens today"
+          label="Tracked Officers"
+          value={latestOfficerLocations.length}
+          hint={
+            selectedRoute
+              ? `Latest officer positions for ${selectedRoute.screen_id}`
+              : 'No route selected'
+          }
         />
 
         <KpiCard
-          label="Selected Route Duty"
-          value={selectedOnDutyOfficers.length}
-          hint={selectedRoute?.title || 'No route selected'}
+          label="Officer Events"
+          value={officerLocations.length}
+          hint="Events from last 30 minutes"
         />
 
         <KpiCard
@@ -361,14 +438,12 @@ export default function Dashboard() {
         />
 
         <KpiCard
-          label="Route Status"
-          value={selectedRouteActive ? 'Active' : 'Idle'}
+          label="Layer Refresh"
+          value={`${Math.round(officerRefreshMs / 1000)}s`}
           hint={
-            selectedSchedule
-              ? `${formatTime(selectedSchedule.start_time)} - ${formatTime(
-                  selectedSchedule.end_time
-                )}`
-              : 'No schedule'
+            lastOfficerRefreshAt
+              ? `Last refresh ${formatDateTime(lastOfficerRefreshAt)}`
+              : 'Waiting for first refresh'
           }
         />
       </div>
@@ -444,6 +519,16 @@ export default function Dashboard() {
                   </div>
 
                   <div>
+                    <strong style={{ color: 'var(--text)' }}>Tracking ref:</strong>{' '}
+                    {selectedRoute.screen_id}
+                  </div>
+
+                  <div>
+                    <strong style={{ color: 'var(--text)' }}>Config:</strong>{' '}
+                    {trackingConfigName}
+                  </div>
+
+                  <div>
                     <strong style={{ color: 'var(--text)' }}>Location:</strong>{' '}
                     {selectedRoute.location_name}
                   </div>
@@ -491,6 +576,32 @@ export default function Dashboard() {
                   />
                   Show live traffic
                 </label>
+
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    color: 'var(--text)',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={officerLayerEnabled}
+                    onChange={(event) =>
+                      setOfficerLayerEnabled(event.target.checked)
+                    }
+                    style={{
+                      width: '16px',
+                      height: '16px',
+                      accentColor: 'var(--accent)',
+                    }}
+                  />
+                  Show officer layer
+                </label>
               </div>
             )}
           </div>
@@ -510,10 +621,22 @@ export default function Dashboard() {
                 fontSize: '15px',
               }}
             >
-              Officers on Selected Route
+              Tracked Officers
             </h3>
 
-            {selectedOnDutyOfficers.length === 0 ? (
+            {officerLocationsLoading && (
+              <p
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px',
+                  margin: '0 0 10px',
+                }}
+              >
+                Loading officer locations...
+              </p>
+            )}
+
+            {!officerLayerEnabled ? (
               <p
                 style={{
                   color: 'var(--text-secondary)',
@@ -521,7 +644,17 @@ export default function Dashboard() {
                   margin: 0,
                 }}
               >
-                No officers assigned as on duty for this route today.
+                Officer layer is disabled.
+              </p>
+            ) : latestOfficerLocations.length === 0 ? (
+              <p
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px',
+                  margin: 0,
+                }}
+              >
+                No recent officer GPS events found for this screen.
               </p>
             ) : (
               <div
@@ -533,32 +666,35 @@ export default function Dashboard() {
                   maxHeight: '100%',
                 }}
               >
-                {selectedOnDutyOfficers.map((assignment) => {
-                  const officer = getSingleValue(assignment.officers);
+                {latestOfficerLocations.map((officer) => (
+                  <div
+                    key={officer.officer_external_id}
+                    style={{
+                      padding: '9px 10px',
+                      border: '1px solid var(--border)',
+                      borderRadius: '10px',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <strong>{getOfficerDisplayName(officer)}</strong>
 
-                  return (
                     <div
-                      key={assignment.id}
                       style={{
-                        padding: '9px 10px',
-                        border: '1px solid var(--border)',
-                        borderRadius: '10px',
-                        fontSize: '13px',
+                        color: 'var(--text-secondary)',
+                        fontSize: '12px',
+                        marginTop: '2px',
+                        lineHeight: 1.5,
                       }}
                     >
-                      <strong>{officer?.name || 'Unknown Officer'}</strong>
-                      <div
-                        style={{
-                          color: 'var(--text-secondary)',
-                          fontSize: '12px',
-                          marginTop: '2px',
-                        }}
-                      >
-                        {officer?.rank || 'Rank not set'} | On duty
-                      </div>
+                      ID: {officer.officer_external_id}
+                      <br />
+                      Last: {formatDateTime(officer.event_time)}
+                      <br />
+                      GPS: {Number(officer.lat).toFixed(6)},{' '}
+                      {Number(officer.lng).toFixed(6)}
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -619,15 +755,20 @@ export default function Dashboard() {
 
               <MarkerF position={midpoint} label="M" title="Route midpoint" />
 
-              {routePath.length === 2 && (
-                <PolylineF
-                  path={routePath}
-                  options={{
-                    strokeOpacity: 0.6,
-                    strokeWeight: 1,
-                  }}
-                />
-              )}
+              {officerLayerEnabled &&
+                latestOfficerLocations.map((officer) => (
+                  <MarkerF
+                    key={officer.officer_external_id}
+                    position={{
+                      lat: Number(officer.lat),
+                      lng: Number(officer.lng),
+                    }}
+                    label="P"
+                    title={`${getOfficerDisplayName(officer)} | ${
+                      officer.officer_external_id
+                    }`}
+                  />
+                ))}
             </GoogleMap>
           )}
         </div>

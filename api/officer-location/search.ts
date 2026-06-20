@@ -1,29 +1,20 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-type SearchPayload = {
-  reference: string;
-  configName?: string;
-  officerId?: string;
-  timeRange: {
-    start: number;
-    end: number;
-  };
-};
+function getQueryValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
 
 function normalizeTimestamp(value: number): number {
   return value > 9999999999 ? Math.floor(value / 1000) : value;
 }
 
-function isValidNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
+  if (req.method !== 'GET') {
     return res.status(405).json({
       error: 'METHOD_NOT_ALLOWED',
-      message: 'Only POST requests are allowed.',
+      message: 'Only GET requests are allowed.',
     });
   }
 
@@ -38,33 +29,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const payload = req.body as SearchPayload;
+    const reference = getQueryValue(req.query.reference);
+    const configName = getQueryValue(req.query.configName);
+    const officerId = getQueryValue(req.query.officerId);
+    const startRaw = getQueryValue(req.query.start);
+    const endRaw = getQueryValue(req.query.end);
 
-    if (!payload.reference?.trim()) {
+    if (!reference?.trim()) {
       return res.status(400).json({
         error: 'INVALID_REFERENCE',
-        message: 'reference is required.',
+        message: 'reference query parameter is required.',
       });
     }
 
-    if (
-      !payload.timeRange ||
-      !isValidNumber(payload.timeRange.start) ||
-      !isValidNumber(payload.timeRange.end)
-    ) {
+    const startNumber = Number(startRaw);
+    const endNumber = Number(endRaw);
+
+    if (!Number.isFinite(startNumber) || !Number.isFinite(endNumber)) {
       return res.status(400).json({
         error: 'INVALID_TIME_RANGE',
-        message: 'timeRange.start and timeRange.end are required Unix timestamps.',
+        message: 'start and end query parameters must be Unix timestamps.',
       });
     }
 
-    const start = normalizeTimestamp(payload.timeRange.start);
-    const end = normalizeTimestamp(payload.timeRange.end);
+    const start = normalizeTimestamp(startNumber);
+    const end = normalizeTimestamp(endNumber);
 
     if (end < start) {
       return res.status(400).json({
         error: 'INVALID_TIME_RANGE',
-        message: 'timeRange.end must be greater than or equal to timeRange.start.',
+        message: 'end must be greater than or equal to start.',
       });
     }
 
@@ -86,17 +80,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         event_time,
         created_at
       `)
-      .eq('reference', payload.reference.trim())
+      .eq('reference', reference.trim())
       .gte('event_timestamp', start)
       .lte('event_timestamp', end)
       .order('event_timestamp', { ascending: true });
 
-    if (payload.configName?.trim()) {
-      query = query.eq('config_name', payload.configName.trim());
+    if (configName?.trim()) {
+      query = query.eq('config_name', configName.trim());
     }
 
-    if (payload.officerId?.trim()) {
-      query = query.eq('officer_external_id', payload.officerId.trim());
+    if (officerId?.trim()) {
+      query = query.eq('officer_external_id', officerId.trim());
     }
 
     const { data, error } = await query;
@@ -111,9 +105,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     return res.status(200).json({
-      reference: payload.reference.trim(),
-      configName: payload.configName || null,
-      officerId: payload.officerId || null,
+      reference: reference.trim(),
+      configName: configName || null,
+      officerId: officerId || null,
       timeRange: {
         start,
         end,
