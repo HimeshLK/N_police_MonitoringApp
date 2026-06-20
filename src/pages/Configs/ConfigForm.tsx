@@ -4,11 +4,15 @@ import {
   createConfigWithScreens,
   getConfig,
   getScreenOptions,
-  getSelectedScreenIds,
+  getSelectedScreens,
   updateConfigWithScreens,
+  type ConfigScreenSelection,
   type ScreenOption,
 } from '../../api/configsApi';
 import RoleGuard from '../../components/RoleGuard';
+
+const DEFAULT_INTERVAL_MS = 18000;
+const MIN_INTERVAL_MS = 1000;
 
 export default function ConfigForm() {
   return (
@@ -39,7 +43,11 @@ function ConfigFormInner() {
   const [enabled, setEnabled] = useState(true);
 
   const [screenOptions, setScreenOptions] = useState<ScreenOption[]>([]);
-  const [selectedScreenIds, setSelectedScreenIds] = useState<string[]>([]);
+
+  // key = route_allocation_id, value = interval_ms
+  const [selectedScreens, setSelectedScreens] = useState<Record<string, number>>(
+    {}
+  );
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
@@ -76,7 +84,7 @@ function ConfigFormInner() {
       setApiError(null);
 
       try {
-        const cfg = await getConfig(id as string);
+        const cfg = await getConfig(id as any);
 
         setConfigName(cfg.config_name);
         setAppName(cfg.app_name);
@@ -85,8 +93,21 @@ function ConfigFormInner() {
         setApiKey(cfg.api_key ?? '');
         setEnabled(cfg.enabled);
 
-        const selectedIds = await getSelectedScreenIds(id as string);
-        setSelectedScreenIds(selectedIds);
+        const selected = await getSelectedScreens(id as any);
+
+        const selectedMap = selected.reduce<Record<string, number>>(
+          (acc, item) => {
+            acc[item.route_allocation_id] =
+              item.interval_ms && item.interval_ms > 0
+                ? item.interval_ms
+                : DEFAULT_INTERVAL_MS;
+
+            return acc;
+          },
+          {}
+        );
+
+        setSelectedScreens(selectedMap);
       } catch (e) {
         setApiError((e as Error).message);
       } finally {
@@ -116,8 +137,18 @@ function ConfigFormInner() {
       e.location = 'Location is required.';
     }
 
-    if (selectedScreenIds.length === 0) {
+    const selectedScreenEntries = Object.entries(selectedScreens);
+
+    if (selectedScreenEntries.length === 0) {
       e.screens = 'Select at least one related screen.';
+    }
+
+    const hasInvalidInterval = selectedScreenEntries.some(([, interval]) => {
+      return !Number.isFinite(interval) || interval < MIN_INTERVAL_MS;
+    });
+
+    if (hasInvalidInterval) {
+      e.screens = `Each selected screen must have an interval of at least ${MIN_INTERVAL_MS} ms.`;
     }
 
     setErrors(e);
@@ -125,22 +156,53 @@ function ConfigFormInner() {
   }
 
   function toggleScreen(screenId: string, checked: boolean) {
-    setSelectedScreenIds((prev) => {
+    setSelectedScreens((prev) => {
+      const next = { ...prev };
+
       if (checked) {
-        if (prev.includes(screenId)) return prev;
-        return [...prev, screenId];
+        next[screenId] = next[screenId] || DEFAULT_INTERVAL_MS;
+      } else {
+        delete next[screenId];
       }
 
-      return prev.filter((id) => id !== screenId);
+      return next;
     });
   }
 
+  function updateScreenInterval(screenId: string, value: string) {
+    const interval = Number(value);
+
+    setSelectedScreens((prev) => ({
+      ...prev,
+      [screenId]: Number.isFinite(interval) ? interval : 0,
+    }));
+  }
+
   function selectAllScreens() {
-    setSelectedScreenIds(screenOptions.map((screen) => screen.id));
+    setSelectedScreens((prev) => {
+      const next = { ...prev };
+
+      screenOptions.forEach((screen) => {
+        next[screen.id] = next[screen.id] || DEFAULT_INTERVAL_MS;
+      });
+
+      return next;
+    });
   }
 
   function clearAllScreens() {
-    setSelectedScreenIds([]);
+    setSelectedScreens({});
+  }
+
+  function buildSelectedScreenPayload(): ConfigScreenSelection[] {
+    return screenOptions
+      .filter((screen) =>
+        Object.prototype.hasOwnProperty.call(selectedScreens, screen.id)
+      )
+      .map((screen) => ({
+        route_allocation_id: screen.id,
+        interval_ms: selectedScreens[screen.id] || DEFAULT_INTERVAL_MS,
+      }));
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -161,10 +223,12 @@ function ConfigFormInner() {
         enabled,
       };
 
+      const selectedScreenPayload = buildSelectedScreenPayload();
+
       if (isEdit && id) {
-        await updateConfigWithScreens(id, input, selectedScreenIds);
+        await updateConfigWithScreens(id, input, selectedScreenPayload);
       } else {
-        await createConfigWithScreens(input, selectedScreenIds);
+        await createConfigWithScreens(input, selectedScreenPayload);
       }
 
       navigate('/configs');
@@ -186,7 +250,7 @@ function ConfigFormInner() {
   }
 
   return (
-    <div style={{ maxWidth: '760px' }}>
+    <div style={{ maxWidth: '860px' }}>
       <div className="page-header">
         <h1 className="page-title">{isEdit ? 'Edit Config' : 'New Config'}</h1>
       </div>
@@ -261,7 +325,7 @@ function ConfigFormInner() {
                 <span className="form-error-msg">{errors.location}</span>
               )}
               <span className="form-hint">
-                Used only as config metadata. It does not filter related screens.
+                Used only as config metadata. It does not filter screens.
               </span>
             </div>
 
@@ -325,8 +389,7 @@ function ConfigFormInner() {
               <div>
                 <label className="form-label">Related Screens *</label>
                 <span className="form-hint">
-                  Select the route allocation screens that should appear in this
-                  config endpoint.
+                  Select screens and configure each screen refresh interval.
                 </span>
               </div>
 
@@ -350,7 +413,7 @@ function ConfigFormInner() {
                   type="button"
                   className="btn btn-secondary"
                   onClick={clearAllScreens}
-                  disabled={selectedScreenIds.length === 0}
+                  disabled={Object.keys(selectedScreens).length === 0}
                 >
                   Clear
                 </button>
@@ -381,67 +444,124 @@ function ConfigFormInner() {
                 }}
               >
                 {screenOptions.map((screen, index) => {
-                  const checked = selectedScreenIds.includes(screen.id);
+                  const checked = Object.prototype.hasOwnProperty.call(
+                    selectedScreens,
+                    screen.id
+                  );
                   const isLast = index === screenOptions.length - 1;
 
                   return (
-                    <label
+                    <div
                       key={screen.id}
                       style={{
-                        display: 'flex',
+                        display: 'grid',
+                        gridTemplateColumns: checked ? '1fr 220px' : '1fr',
+                        gap: '12px',
                         alignItems: 'center',
-                        gap: '10px',
                         padding: '12px 14px',
                         borderBottom: isLast
                           ? 'none'
                           : '1px solid var(--border)',
-                        cursor: 'pointer',
                         background: checked
                           ? 'rgba(59, 130, 246, 0.08)'
                           : 'transparent',
                       }}
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) =>
-                          toggleScreen(screen.id, e.target.checked)
-                        }
-                        style={{
-                          width: '16px',
-                          height: '16px',
-                          accentColor: 'var(--accent)',
-                        }}
-                      />
-
-                      <div
+                      <label
                         style={{
                           display: 'flex',
-                          flexDirection: 'column',
-                          gap: '3px',
+                          alignItems: 'center',
+                          gap: '10px',
+                          cursor: 'pointer',
                         }}
                       >
-                        <span
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            toggleScreen(screen.id, e.target.checked)
+                          }
                           style={{
-                            fontSize: '14px',
-                            fontWeight: 600,
-                            color: 'var(--text)',
+                            width: '16px',
+                            height: '16px',
+                            accentColor: 'var(--accent)',
                           }}
-                        >
-                          {screen.screen_id} - {screen.title}
-                        </span>
+                        />
 
-                        <span
+                        <div
                           style={{
-                            fontSize: '12px',
-                            color: 'var(--text-secondary)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '3px',
                           }}
                         >
-                          Location: {screen.location_name} | Status:{' '}
-                          {screen.enabled ? 'Enabled' : 'Disabled'}
-                        </span>
-                      </div>
-                    </label>
+                          <span
+                            style={{
+                              fontSize: '14px',
+                              fontWeight: 600,
+                              color: 'var(--text)',
+                            }}
+                          >
+                            {screen.screen_id} - {screen.title}
+                          </span>
+
+                          <span
+                            style={{
+                              fontSize: '12px',
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            Location: {screen.location_name} | Status:{' '}
+                            {screen.enabled ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                      </label>
+
+                      {checked && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-end',
+                            gap: '8px',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: '12px',
+                              color: 'var(--text-secondary)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            Interval
+                          </span>
+
+                          <input
+                            type="number"
+                            min={MIN_INTERVAL_MS}
+                            step={1000}
+                            value={selectedScreens[screen.id] ?? DEFAULT_INTERVAL_MS}
+                            onChange={(e) =>
+                              updateScreenInterval(screen.id, e.target.value)
+                            }
+                            className="form-input"
+                            style={{
+                              width: '110px',
+                              height: '36px',
+                            }}
+                          />
+
+                          <span
+                            style={{
+                              fontSize: '12px',
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            ms
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>

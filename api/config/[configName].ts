@@ -37,15 +37,40 @@ type DashboardConfigScreen = {
   id: string;
   sort_order: number;
   enabled: boolean;
+  interval_ms: number | null;
   route_allocations: RouteAllocation | RouteAllocation[] | null;
 };
 
-function getSingleQueryValue(value: string | string[] | undefined): string | undefined {
+type ScreenResponse = {
+  screenId: string;
+  title: string;
+  description: string;
+  schedule: {
+    start: string;
+    end: string;
+    millis: number;
+  };
+  enabled: boolean;
+  interval: number;
+  mapConfig: {
+    lat: number;
+    lng: number;
+    zoom: number;
+    params: unknown[];
+    updateFrequency: number;
+  };
+};
+
+function getSingleQueryValue(
+  value: string | string[] | undefined
+): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
 }
 
-function getSingleHeaderValue(value: string | string[] | undefined): string | undefined {
+function getSingleHeaderValue(
+  value: string | string[] | undefined
+): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
 }
@@ -63,7 +88,38 @@ function durationMillis(start: string, end: string): number {
   return new Date(end).getTime() - new Date(start).getTime();
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+function getSingleRelation<T>(value: T | T[] | null): T | null {
+  if (Array.isArray(value)) return value[0] || null;
+  return value;
+}
+
+function resolveIntervalMs(
+  configScreenInterval: number | null,
+  routeUpdateFrequency: number | null | undefined
+): number {
+  if (
+    typeof configScreenInterval === 'number' &&
+    Number.isFinite(configScreenInterval) &&
+    configScreenInterval > 0
+  ) {
+    return configScreenInterval;
+  }
+
+  if (
+    typeof routeUpdateFrequency === 'number' &&
+    Number.isFinite(routeUpdateFrequency) &&
+    routeUpdateFrequency > 0
+  ) {
+    return routeUpdateFrequency;
+  }
+
+  return 18000;
+}
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   if (req.method !== 'GET') {
     return res.status(405).json({
       error: 'METHOD_NOT_ALLOWED',
@@ -84,7 +140,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (configApiKey && configApiKey.trim().length > 0) {
-      const requestApiKey = getSingleHeaderValue(req.headers['x-config-api-key']);
+      const requestApiKey = getSingleHeaderValue(
+        req.headers['x-config-api-key']
+      );
 
       if (requestApiKey !== configApiKey) {
         return res.status(401).json({
@@ -97,8 +155,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
     const configName = getSingleQueryValue(req.query.configName);
-    const locationFilter = getSingleQueryValue(req.query.location);
-    const includeDisabled = getSingleQueryValue(req.query.includeDisabled) === 'true';
+    const includeDisabled =
+      getSingleQueryValue(req.query.includeDisabled) === 'true';
 
     if (!configName) {
       return res.status(400).json({
@@ -136,6 +194,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         id,
         sort_order,
         enabled,
+        interval_ms,
         route_allocations (
           id,
           screen_id,
@@ -161,7 +220,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .returns<DashboardConfigScreen[]>();
 
     if (configScreensError) {
-      console.error('Dashboard config screens query error:', configScreensError);
+      console.error(
+        'Dashboard config screens query error:',
+        configScreensError
+      );
 
       return res.status(500).json({
         error: 'INTERNAL_SERVER_ERROR',
@@ -170,10 +232,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const screens = (configScreens || [])
-      .map((configScreen) => {
-        const route = Array.isArray(configScreen.route_allocations)
-          ? configScreen.route_allocations[0]
-          : configScreen.route_allocations;
+      .map((configScreen): ScreenResponse | null => {
+        const route = getSingleRelation(configScreen.route_allocations);
 
         if (!route) return null;
 
@@ -181,9 +241,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return null;
         }
 
-        const schedule = Array.isArray(route.schedules)
-          ? route.schedules[0]
-          : route.schedules;
+        const schedule = getSingleRelation(route.schedules);
+
+        const interval = resolveIntervalMs(
+          configScreen.interval_ms,
+          route.update_frequency_ms
+        );
 
         return {
           screenId: route.screen_id,
@@ -197,16 +260,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               : 0,
           },
           enabled: route.enabled && configScreen.enabled,
+          interval,
           mapConfig: {
             lat: route.center_lat,
             lng: route.center_lng,
             zoom: route.zoom_level,
             params: route.map_params || [],
-            updateFrequency: route.update_frequency_ms,
+            updateFrequency: interval,
           },
         };
       })
-      .filter(Boolean);
+      .filter((screen): screen is ScreenResponse => screen !== null);
 
     return res.status(200).json({
       configName: config.config_name,

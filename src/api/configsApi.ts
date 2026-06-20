@@ -27,7 +27,15 @@ export type ScreenOption = {
   title: string;
   location_name: string;
   enabled: boolean;
+  update_frequency_ms?: number | null;
 };
+
+export type ConfigScreenSelection = {
+  route_allocation_id: string;
+  interval_ms: number;
+};
+
+const DEFAULT_INTERVAL_MS = 18000;
 
 export async function getConfigs(): Promise<DashboardConfig[]> {
   const { data, error } = await supabase
@@ -94,28 +102,47 @@ export async function deleteConfig(configId: string): Promise<void> {
 export async function getScreenOptions(): Promise<ScreenOption[]> {
   const { data, error } = await supabase
     .from('route_allocations')
-    .select('id, screen_id, title, location_name, enabled')
+    .select(`
+      id,
+      screen_id,
+      title,
+      location_name,
+      enabled,
+      update_frequency_ms
+    `)
     .order('screen_id', { ascending: true });
 
   if (error) throw error;
 
   return data || [];
 }
-export async function getSelectedScreenIds(configId: string): Promise<string[]> {
+
+export async function getSelectedScreens(
+  configId: string
+): Promise<ConfigScreenSelection[]> {
   const { data, error } = await supabase
     .from('dashboard_config_screens')
-    .select('route_allocation_id')
+    .select(`
+      route_allocation_id,
+      interval_ms
+    `)
     .eq('dashboard_config_id', configId)
     .order('sort_order', { ascending: true });
 
   if (error) throw error;
 
-  return (data || []).map((item) => item.route_allocation_id);
+  return (data || []).map((item) => ({
+    route_allocation_id: item.route_allocation_id,
+    interval_ms:
+      typeof item.interval_ms === 'number' && item.interval_ms > 0
+        ? item.interval_ms
+        : DEFAULT_INTERVAL_MS,
+  }));
 }
 
 export async function replaceConfigScreens(
   configId: string,
-  screenIds: string[]
+  selectedScreens: ConfigScreenSelection[]
 ): Promise<void> {
   const { error: deleteError } = await supabase
     .from('dashboard_config_screens')
@@ -124,11 +151,15 @@ export async function replaceConfigScreens(
 
   if (deleteError) throw deleteError;
 
-  if (screenIds.length === 0) return;
+  if (selectedScreens.length === 0) return;
 
-  const rows = screenIds.map((routeAllocationId, index) => ({
+  const rows = selectedScreens.map((screen, index) => ({
     dashboard_config_id: configId,
-    route_allocation_id: routeAllocationId,
+    route_allocation_id: screen.route_allocation_id,
+    interval_ms:
+      typeof screen.interval_ms === 'number' && screen.interval_ms > 0
+        ? screen.interval_ms
+        : DEFAULT_INTERVAL_MS,
     sort_order: index,
     enabled: true,
   }));
@@ -142,12 +173,12 @@ export async function replaceConfigScreens(
 
 export async function createConfigWithScreens(
   payload: DashboardConfigPayload,
-  screenIds: string[]
+  selectedScreens: ConfigScreenSelection[]
 ): Promise<DashboardConfig> {
   const config = await createConfig(payload);
 
   try {
-    await replaceConfigScreens(config.id, screenIds);
+    await replaceConfigScreens(config.id, selectedScreens);
     return config;
   } catch (error) {
     await deleteConfig(config.id).catch(() => undefined);
@@ -158,9 +189,11 @@ export async function createConfigWithScreens(
 export async function updateConfigWithScreens(
   configId: string,
   payload: DashboardConfigPayload,
-  screenIds: string[]
+  selectedScreens: ConfigScreenSelection[]
 ): Promise<DashboardConfig> {
   const config = await updateConfig(configId, payload);
-  await replaceConfigScreens(configId, screenIds);
+
+  await replaceConfigScreens(configId, selectedScreens);
+
   return config;
 }
