@@ -10,6 +10,18 @@ type OfficerLocationSearchPayload = {
   };
 };
 
+type OfficerLocationRow = {
+  reference: string;
+  config_name: string;
+  officer_external_id: string;
+  officer_fname: string | null;
+  officer_lname: string | null;
+  lat: number;
+  lng: number;
+  device_mac: string | null;
+  event_timestamp: number;
+};
+
 function normalizeTimestamp(value: number): number {
   return value > 9999999999 ? Math.floor(value / 1000) : value;
 }
@@ -67,7 +79,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ) {
       return res.status(400).json({
         error: 'INVALID_TIME_RANGE',
-        message: 'timeRange.start and timeRange.end are required Unix timestamps.',
+        message:
+          'timeRange.start and timeRange.end are required Unix timestamps.',
       });
     }
 
@@ -100,7 +113,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq('config_name', payload.configName.trim())
       .gte('event_timestamp', start)
       .lte('event_timestamp', end)
-      .order('event_timestamp', { ascending: true });
+      .order('event_timestamp', { ascending: false })
+      .returns<OfficerLocationRow[]>();
 
     if (error) {
       console.error('Officer location search error:', error);
@@ -111,7 +125,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const responsePayload = (data || []).map((item) => ({
+    const latestByOfficer = new Map<string, OfficerLocationRow>();
+
+    for (const item of data || []) {
+      const officerId = item.officer_external_id;
+
+      const existing = latestByOfficer.get(officerId);
+
+      if (!existing || item.event_timestamp > existing.event_timestamp) {
+        latestByOfficer.set(officerId, item);
+      }
+    }
+
+    const responsePayload = Array.from(latestByOfficer.values()).map((item) => ({
       createdAt: item.event_timestamp,
       reference: item.reference,
       configName: item.config_name,
