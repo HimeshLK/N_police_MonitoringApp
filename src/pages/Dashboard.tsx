@@ -3,7 +3,6 @@ import {
   GoogleMap,
   MarkerF,
   useGoogleMap,
-  useJsApiLoader,
 } from '@react-google-maps/api';
 import {
   getDashboardCounts,
@@ -18,6 +17,7 @@ import {
   type OfficerLocation,
 } from '../api/officerLocationsApi';
 import { calculateMidpoint } from '../utils/coordinates';
+import { useGoogleMapsLoader } from '../hooks/useGoogleMapsLoader';
 
 const defaultCenter = {
   lat: 6.927079,
@@ -159,15 +159,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
-
   const trackingConfigName =
     import.meta.env.VITE_TRACKING_CONFIG_NAME || 'cmb_pilot_config';
 
-  const { isLoaded, loadError } = useJsApiLoader({
-    id: 'police-dashboard-map',
-    googleMapsApiKey,
-  });
+  const { googleMapsApiKey, isLoaded, loadError } = useGoogleMapsLoader();
 
   useEffect(() => {
     async function loadDashboard() {

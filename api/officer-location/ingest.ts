@@ -30,14 +30,6 @@ function isValidNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isValidLat(value: number): boolean {
-  return value >= -90 && value <= 90;
-}
-
-function isValidLng(value: number): boolean {
-  return value >= -180 && value <= 180;
-}
-
 function normalizeTimestamp(value: number): {
   eventTimestamp: number;
   eventTimeIso: string;
@@ -69,15 +61,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  if (ingestApiKey && ingestApiKey.trim().length > 0) {
-    const requestKey = getHeaderValue(req.headers['x-location-api-key']);
+  if (!ingestApiKey || ingestApiKey.trim().length === 0) {
+    return res.status(500).json({
+      error: 'SERVER_CONFIG_MISSING',
+      message: 'Missing LOCATION_INGEST_API_KEY.',
+    });
+  }
 
-    if (requestKey !== ingestApiKey) {
-      return res.status(401).json({
-        error: 'UNAUTHORIZED',
-        message: 'Invalid location ingest API key.',
-      });
-    }
+  const requestKey = getHeaderValue(req.headers['x-location-api-key']);
+
+  if (requestKey !== ingestApiKey) {
+    return res.status(401).json({
+      error: 'UNAUTHORIZED',
+      message: 'Invalid location ingest API key.',
+    });
   }
 
   try {
@@ -123,21 +120,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (!isValidNumber(payload.coordinates?.lat) || !isValidLat(payload.coordinates.lat)) {
+    if (
+      !isValidNumber(payload.coordinates?.lat) ||
+      payload.coordinates.lat < -90 ||
+      payload.coordinates.lat > 90
+    ) {
       return res.status(400).json({
         error: 'INVALID_LATITUDE',
         message: 'coordinates.lat must be between -90 and 90.',
       });
     }
 
-    if (!isValidNumber(lng) || !isValidLng(lng)) {
+    if (!isValidNumber(lng) || lng < -180 || lng > 180) {
       return res.status(400).json({
         error: 'INVALID_LONGITUDE',
-        message: 'coordinates.lng must be between -180 and 180.',
+        message: 'coordinates.lng/log must be between -180 and 180.',
       });
     }
 
-    const { eventTimestamp, eventTimeIso } = normalizeTimestamp(payload.createdAt);
+    const { eventTimestamp, eventTimeIso } = normalizeTimestamp(
+      payload.createdAt
+    );
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
