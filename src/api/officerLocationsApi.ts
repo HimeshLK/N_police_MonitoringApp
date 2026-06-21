@@ -9,7 +9,7 @@ export type OfficerLocation = {
   };
   coordinates: {
     lat: number;
-    log: number;
+    lng: number;
   };
   device: {
     mac: string;

@@ -12,9 +12,7 @@ type MobileLocationPayload = {
   };
   coordinates: {
     lat: number;
-    lng?: number;
-    lon?: number;
-    log?: number;
+    lng: number;
   };
   device?: {
     mac?: string;
@@ -87,11 +85,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const lng =
-      payload.coordinates?.lng ??
-      payload.coordinates?.lon ??
-      payload.coordinates?.log;
-
     if (!payload.reference?.trim()) {
       return res.status(400).json({
         error: 'INVALID_REFERENCE',
@@ -116,7 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!isValidNumber(payload.createdAt)) {
       return res.status(400).json({
         error: 'INVALID_CREATED_AT',
-        message: 'createdAt must be a Unix timestamp.',
+        message: 'createdAt must be a Unix timestamp number.',
       });
     }
 
@@ -131,10 +124,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (!isValidNumber(lng) || lng < -180 || lng > 180) {
+    if (
+      !isValidNumber(payload.coordinates?.lng) ||
+      payload.coordinates.lng < -180 ||
+      payload.coordinates.lng > 180
+    ) {
       return res.status(400).json({
         error: 'INVALID_LONGITUDE',
-        message: 'coordinates.lng/log must be between -180 and 180.',
+        message: 'coordinates.lng must be between -180 and 180.',
       });
     }
 
@@ -155,7 +152,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         officer_lname: payload.user.lname?.trim() || null,
 
         lat: payload.coordinates.lat,
-        lng,
+        lng: payload.coordinates.lng,
 
         device_mac: payload.device?.mac || null,
 

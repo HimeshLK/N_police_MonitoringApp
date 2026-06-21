@@ -129,7 +129,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (const item of data || []) {
       const officerId = item.officer_external_id;
-
       const existing = latestByOfficer.get(officerId);
 
       if (!existing || item.event_timestamp > existing.event_timestamp) {
@@ -148,7 +147,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       coordinates: {
         lat: item.lat,
-        log: item.lng,
+        lng: item.lng,
       },
       device: {
         mac: item.device_mac || '',
