@@ -108,10 +108,15 @@ function KpiCard({
   );
 }
 
-function formatDateTime(value?: string): string {
+function formatDateTime(value?: string | number): string {
   if (!value) return '-';
 
-  return new Date(value).toLocaleString('en-US', {
+  const date =
+    typeof value === 'number'
+      ? new Date(value * 1000)
+      : new Date(value);
+
+  return date.toLocaleString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -120,11 +125,11 @@ function formatDateTime(value?: string): string {
 }
 
 function getOfficerDisplayName(officer: OfficerLocation): string {
-  const name = `${officer.officer_fname || ''} ${
-    officer.officer_lname || ''
+  const name = `${officer.user?.fname || ''} ${
+    officer.user?.lname || ''
   }`.trim();
 
-  return name || officer.officer_external_id;
+  return name || officer.user?.id || 'Unknown Officer';
 }
 
 export default function Dashboard() {
@@ -291,10 +296,14 @@ export default function Dashboard() {
     const latestByOfficer = new Map<string, OfficerLocation>();
 
     officerLocations.forEach((location) => {
-      const existing = latestByOfficer.get(location.officer_external_id);
+      const officerId = location.user?.id;
 
-      if (!existing || location.event_timestamp > existing.event_timestamp) {
-        latestByOfficer.set(location.officer_external_id, location);
+      if (!officerId) return;
+
+      const existing = latestByOfficer.get(officerId);
+
+      if (!existing || Number(location.createdAt) > Number(existing.createdAt)) {
+        latestByOfficer.set(officerId, location);
       }
     });
 
@@ -668,7 +677,7 @@ export default function Dashboard() {
               >
                 {latestOfficerLocations.map((officer) => (
                   <div
-                    key={officer.officer_external_id}
+                    key={officer.user.id}
                     style={{
                       padding: '9px 10px',
                       border: '1px solid var(--border)',
@@ -686,12 +695,12 @@ export default function Dashboard() {
                         lineHeight: 1.5,
                       }}
                     >
-                      ID: {officer.officer_external_id}
+                      ID: {officer.user.id}
                       <br />
-                      Last: {formatDateTime(officer.event_time)}
+                      Last: {formatDateTime(officer.createdAt)}
                       <br />
-                      GPS: {Number(officer.lat).toFixed(6)},{' '}
-                      {Number(officer.lng).toFixed(6)}
+                      GPS: {Number(officer.coordinates.lat).toFixed(6)},{' '}
+                      {Number(officer.coordinates.log).toFixed(6)}
                     </div>
                   </div>
                 ))}
@@ -758,14 +767,14 @@ export default function Dashboard() {
               {officerLayerEnabled &&
                 latestOfficerLocations.map((officer) => (
                   <MarkerF
-                    key={officer.officer_external_id}
+                    key={officer.user.id}
                     position={{
-                      lat: Number(officer.lat),
-                      lng: Number(officer.lng),
+                      lat: Number(officer.coordinates.lat),
+                      lng: Number(officer.coordinates.log),
                     }}
                     label="P"
                     title={`${getOfficerDisplayName(officer)} | ${
-                      officer.officer_external_id
+                      officer.user.id
                     }`}
                   />
                 ))}

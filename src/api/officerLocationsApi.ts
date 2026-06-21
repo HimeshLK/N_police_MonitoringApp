@@ -1,35 +1,41 @@
 export type OfficerLocation = {
-  id: string;
+  createdAt: number;
   reference: string;
-  config_name: string;
-  officer_external_id: string;
-  officer_fname: string | null;
-  officer_lname: string | null;
-  lat: number;
-  lng: number;
-  device_mac: string | null;
-  event_timestamp: number;
-  event_time: string;
-  created_at: string;
+  configName: string;
+  user: {
+    fname: string;
+    lname: string;
+    id: string;
+  };
+  coordinates: {
+    lat: number;
+    log: number;
+  };
+  device: {
+    mac: string;
+  };
 };
 
 export async function getOfficerLocationsByRange(params: {
   reference: string;
-  configName?: string;
+  configName: string;
   start: number;
   end: number;
 }): Promise<OfficerLocation[]> {
-  const searchParams = new URLSearchParams();
-
-  searchParams.set('reference', params.reference);
-  searchParams.set('start', String(params.start));
-  searchParams.set('end', String(params.end));
-
-  if (params.configName) {
-    searchParams.set('configName', params.configName);
-  }
-
-  const response = await fetch(`/api/officer-location/search?${searchParams}`);
+  const response = await fetch('/api/officer-location/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      reference: params.reference,
+      configName: params.configName,
+      timeRange: {
+        start: params.start,
+        end: params.end,
+      },
+    }),
+  });
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null);
@@ -41,5 +47,5 @@ export async function getOfficerLocationsByRange(params: {
 
   const result = await response.json();
 
-  return result.locations || [];
+  return Array.isArray(result) ? result : [];
 }

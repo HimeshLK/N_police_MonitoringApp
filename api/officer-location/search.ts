@@ -1,20 +1,28 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-function getQueryValue(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
+type OfficerLocationSearchPayload = {
+  reference: string;
+  configName: string;
+  timeRange: {
+    start: number;
+    end: number;
+  };
+};
 
 function normalizeTimestamp(value: number): number {
   return value > 9999999999 ? Math.floor(value / 1000) : value;
 }
 
+function isValidNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
+  if (req.method !== 'POST') {
     return res.status(405).json({
       error: 'METHOD_NOT_ALLOWED',
-      message: 'Only GET requests are allowed.',
+      message: 'Only POST requests are allowed.',
     });
   }
 
@@ -29,45 +37,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const reference = getQueryValue(req.query.reference);
-    const configName = getQueryValue(req.query.configName);
-    const officerId = getQueryValue(req.query.officerId);
-    const startRaw = getQueryValue(req.query.start);
-    const endRaw = getQueryValue(req.query.end);
+    const payload = req.body as OfficerLocationSearchPayload;
 
-    if (!reference?.trim()) {
+    if (!payload || typeof payload !== 'object') {
+      return res.status(400).json({
+        error: 'INVALID_PAYLOAD',
+        message: 'Request body is required.',
+      });
+    }
+
+    if (!payload.reference?.trim()) {
       return res.status(400).json({
         error: 'INVALID_REFERENCE',
-        message: 'reference query parameter is required.',
+        message: 'reference is required.',
       });
     }
 
-    const startNumber = Number(startRaw);
-    const endNumber = Number(endRaw);
+    if (!payload.configName?.trim()) {
+      return res.status(400).json({
+        error: 'INVALID_CONFIG_NAME',
+        message: 'configName is required.',
+      });
+    }
 
-    if (!Number.isFinite(startNumber) || !Number.isFinite(endNumber)) {
+    if (
+      !payload.timeRange ||
+      !isValidNumber(payload.timeRange.start) ||
+      !isValidNumber(payload.timeRange.end)
+    ) {
       return res.status(400).json({
         error: 'INVALID_TIME_RANGE',
-        message: 'start and end query parameters must be Unix timestamps.',
+        message: 'timeRange.start and timeRange.end are required Unix timestamps.',
       });
     }
 
-    const start = normalizeTimestamp(startNumber);
-    const end = normalizeTimestamp(endNumber);
+    const start = normalizeTimestamp(payload.timeRange.start);
+    const end = normalizeTimestamp(payload.timeRange.end);
 
     if (end < start) {
       return res.status(400).json({
         error: 'INVALID_TIME_RANGE',
-        message: 'end must be greater than or equal to start.',
+        message: 'timeRange.end must be greater than or equal to timeRange.start.',
       });
     }
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-    let query = supabase
+    const { data, error } = await supabase
       .from('officer_location_events')
       .select(`
-        id,
         reference,
         config_name,
         officer_external_id,
@@ -76,24 +94,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         lat,
         lng,
         device_mac,
-        event_timestamp,
-        event_time,
-        created_at
+        event_timestamp
       `)
-      .eq('reference', reference.trim())
+      .eq('reference', payload.reference.trim())
+      .eq('config_name', payload.configName.trim())
       .gte('event_timestamp', start)
       .lte('event_timestamp', end)
       .order('event_timestamp', { ascending: true });
-
-    if (configName?.trim()) {
-      query = query.eq('config_name', configName.trim());
-    }
-
-    if (officerId?.trim()) {
-      query = query.eq('officer_external_id', officerId.trim());
-    }
-
-    const { data, error } = await query;
 
     if (error) {
       console.error('Officer location search error:', error);
@@ -104,17 +111,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    return res.status(200).json({
-      reference: reference.trim(),
-      configName: configName || null,
-      officerId: officerId || null,
-      timeRange: {
-        start,
-        end,
+    const responsePayload = (data || []).map((item) => ({
+      createdAt: item.event_timestamp,
+      reference: item.reference,
+      configName: item.config_name,
+      user: {
+        fname: item.officer_fname || '',
+        lname: item.officer_lname || '',
+        id: item.officer_external_id,
       },
-      count: data?.length || 0,
-      locations: data || [],
-    });
+      coordinates: {
+        lat: item.lat,
+        log: item.lng,
+      },
+      device: {
+        mac: item.device_mac || '',
+      },
+    }));
+
+    return res.status(200).json(responsePayload);
   } catch (error) {
     console.error('Officer location search API error:', error);
 
