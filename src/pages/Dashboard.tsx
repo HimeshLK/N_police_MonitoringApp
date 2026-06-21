@@ -695,7 +695,7 @@ export default function Dashboard() {
                       Last: {formatDateTime(officer.createdAt)}
                       <br />
                       GPS: {Number(officer.coordinates.lat).toFixed(6)},{' '}
-                      {Number(officer.coordinates.log).toFixed(6)}
+                      {Number(officer.coordinates.lng).toFixed(6)}
                     </div>
                   </div>
                 ))}
@@ -765,7 +765,7 @@ export default function Dashboard() {
                     key={officer.user.id}
                     position={{
                       lat: Number(officer.coordinates.lat),
-                      lng: Number(officer.coordinates.log),
+                      lng: Number(officer.coordinates.lng),
                     }}
                     label="P"
                     title={`${getOfficerDisplayName(officer)} | ${
