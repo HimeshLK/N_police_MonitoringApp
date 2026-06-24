@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-type OfficerStatus = 'start' | 'in_progress' | 'stop';
+type OfficerStatus = 'start' | 'running' | 'stop';
 
 type OfficerLocationSearchPayload = {
   reference: string;

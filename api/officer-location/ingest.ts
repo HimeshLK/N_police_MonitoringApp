@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-type OfficerStatus = 'start' | 'in_progress' | 'stop';
+type OfficerStatus = 'start' | 'running' | 'stop';
 
 type MobileLocationPayload = {
   createdAt: number;
@@ -46,7 +46,7 @@ function normalizeTimestamp(value: number): {
 
 function normalizeStatus(value: unknown): OfficerStatus | null {
   if (value === 'start') return 'start';
-  if (value === 'in_progress') return 'in_progress';
+  if (value === 'running') return 'running';
   if (value === 'stop') return 'stop';
 
   return null;
@@ -102,7 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!status) {
       return res.status(400).json({
         error: 'INVALID_STATUS',
-        message: 'status must be one of: start, in_progress, stop.',
+        message: 'status must be one of: start, running, stop.',
       });
     }
 

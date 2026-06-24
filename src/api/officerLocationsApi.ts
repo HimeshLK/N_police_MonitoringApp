@@ -1,4 +1,4 @@
-export type OfficerLocationStatus = 'start' | 'in_progress' | 'stop';
+export type OfficerLocationStatus = 'start' | 'running' | 'stop';
 
 export type OfficerLocation = {
   createdAt: number;
