@@ -1,9 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+type OfficerStatus = 'start' | 'in_progress' | 'stop';
+
 type MobileLocationPayload = {
   createdAt: number;
   reference: string;
+  status: OfficerStatus;
   configName: string;
   user: {
     fname?: string;
@@ -12,7 +15,8 @@ type MobileLocationPayload = {
   };
   coordinates: {
     lat: number;
-    lng: number;
+    lng?: number;
+    log?: number;
   };
   device?: {
     mac?: string;
@@ -38,6 +42,14 @@ function normalizeTimestamp(value: number): {
     eventTimestamp,
     eventTimeIso: new Date(eventTimestamp * 1000).toISOString(),
   };
+}
+
+function normalizeStatus(value: unknown): OfficerStatus | null {
+  if (value === 'start') return 'start';
+  if (value === 'in_progress') return 'in_progress';
+  if (value === 'stop') return 'stop';
+
+  return null;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -85,6 +97,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const status = normalizeStatus(payload.status);
+
+    if (!status) {
+      return res.status(400).json({
+        error: 'INVALID_STATUS',
+        message: 'status must be one of: start, in_progress, stop.',
+      });
+    }
+
+    const lng = payload.coordinates?.lng ?? payload.coordinates?.log;
+
     if (!payload.reference?.trim()) {
       return res.status(400).json({
         error: 'INVALID_REFERENCE',
@@ -124,11 +147,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (
-      !isValidNumber(payload.coordinates?.lng) ||
-      payload.coordinates.lng < -180 ||
-      payload.coordinates.lng > 180
-    ) {
+    if (!isValidNumber(lng) || lng < -180 || lng > 180) {
       return res.status(400).json({
         error: 'INVALID_LONGITUDE',
         message: 'coordinates.lng must be between -180 and 180.',
@@ -151,8 +170,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         officer_fname: payload.user.fname?.trim() || null,
         officer_lname: payload.user.lname?.trim() || null,
 
+        status,
+
         lat: payload.coordinates.lat,
-        lng: payload.coordinates.lng,
+        lng,
 
         device_mac: payload.device?.mac || null,
 

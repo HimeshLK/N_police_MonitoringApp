@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+type OfficerStatus = 'start' | 'in_progress' | 'stop';
+
 type OfficerLocationSearchPayload = {
   reference: string;
   configName: string;
@@ -16,6 +18,7 @@ type OfficerLocationRow = {
   officer_external_id: string;
   officer_fname: string | null;
   officer_lname: string | null;
+  status: OfficerStatus;
   lat: number;
   lng: number;
   device_mac: string | null;
@@ -104,6 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         officer_external_id,
         officer_fname,
         officer_lname,
+        status,
         lat,
         lng,
         device_mac,
@@ -136,23 +140,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const responsePayload = Array.from(latestByOfficer.values()).map((item) => ({
-      createdAt: item.event_timestamp,
-      reference: item.reference,
-      configName: item.config_name,
-      user: {
-        fname: item.officer_fname || '',
-        lname: item.officer_lname || '',
-        id: item.officer_external_id,
-      },
-      coordinates: {
-        lat: item.lat,
-        lng: item.lng,
-      },
-      device: {
-        mac: item.device_mac || '',
-      },
-    }));
+    const responsePayload = Array.from(latestByOfficer.values())
+      .filter((item) => item.status !== 'stop')
+      .map((item) => ({
+        createdAt: item.event_timestamp,
+        reference: item.reference,
+        status: item.status,
+        configName: item.config_name,
+        user: {
+          fname: item.officer_fname || '',
+          lname: item.officer_lname || '',
+          id: item.officer_external_id,
+        },
+        coordinates: {
+          lat: item.lat,
+          lng: item.lng,
+        },
+        device: {
+          mac: item.device_mac || '',
+        },
+      }));
 
     return res.status(200).json(responsePayload);
   } catch (error) {

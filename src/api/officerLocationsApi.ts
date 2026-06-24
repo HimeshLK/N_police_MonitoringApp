@@ -1,6 +1,9 @@
+export type OfficerLocationStatus = 'start' | 'in_progress' | 'stop';
+
 export type OfficerLocation = {
   createdAt: number;
   reference: string;
+  status: OfficerLocationStatus;
   configName: string;
   user: {
     fname: string;
