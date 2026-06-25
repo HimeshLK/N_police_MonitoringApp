@@ -92,7 +92,11 @@ function RouteFormInner() {
   const [locationName, setLocationName] = useState('colombo');
   const [scheduleId, setScheduleId] = useState('');
   const [zoomLevel, setZoomLevel] = useState(15);
-  const [updateFreqMs, setUpdateFreqMs] = useState(18000);
+
+  // UI value is seconds.
+  // Backend value is still milliseconds.
+  const [updateFreqSeconds, setUpdateFreqSeconds] = useState(18);
+
   const [enabled, setEnabled] = useState(true);
 
   const [startCoords, setStartCoords] = useState<Coords | null>(null);
@@ -156,7 +160,13 @@ function RouteFormInner() {
         setLocationName(route.location_name);
         setScheduleId(route.schedule_id);
         setZoomLevel(route.zoom_level);
-        setUpdateFreqMs(route.update_frequency_ms);
+
+        // Backend stores milliseconds.
+        // UI displays seconds.
+        setUpdateFreqSeconds(
+          Math.max(1, Math.round(Number(route.update_frequency_ms || 18000) / 1000))
+        );
+
         setEnabled(route.enabled);
 
         setStartLabel(route.start_label ?? '');
@@ -275,8 +285,11 @@ function RouteFormInner() {
       e.zoom_level = 'Zoom must be between 1 and 20.';
     }
 
-    if (!Number.isInteger(updateFreqMs) || updateFreqMs <= 0) {
-      e.update_frequency_ms = 'Must be a positive integer.';
+    if (
+      !Number.isInteger(updateFreqSeconds) ||
+      updateFreqSeconds <= 0
+    ) {
+      e.update_frequency_ms = 'Must be a positive number of seconds.';
     }
 
     setErrors(e);
@@ -309,7 +322,9 @@ function RouteFormInner() {
         zoom_level: zoomLevel,
         enabled,
         map_params: [],
-        update_frequency_ms: updateFreqMs,
+
+        // UI sends seconds, backend receives milliseconds.
+        update_frequency_ms: updateFreqSeconds * 1000,
       };
 
       if (isEdit && id) {
@@ -450,14 +465,16 @@ function RouteFormInner() {
                 </div>
 
                 <div className="form-field">
-                  <label className="form-label">Update Frequency ms</label>
+                  <label className="form-label">Update Frequency seconds</label>
                   <input
                     type="number"
                     min={1}
-                    value={updateFreqMs}
+                    step={1}
+                    value={updateFreqSeconds}
                     onChange={(event) =>
-                      setUpdateFreqMs(Number(event.target.value))
+                      setUpdateFreqSeconds(Number(event.target.value))
                     }
+                    placeholder="18"
                     className={`form-input${
                       errors.update_frequency_ms ? ' error' : ''
                     }`}

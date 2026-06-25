@@ -1,9 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  GoogleMap,
-  MarkerF,
-  useGoogleMap,
-} from '@react-google-maps/api';
+import { GoogleMap, MarkerF, useGoogleMap } from '@react-google-maps/api';
 import {
   getDashboardCounts,
   type DashboardCounts,
@@ -12,6 +8,12 @@ import {
   getDashboardRoutes,
   type DashboardRoute,
 } from '../api/routesApi';
+import {
+  getConfigs,
+  getSelectedScreens,
+  type ConfigScreenSelection,
+  type DashboardConfig,
+} from '../api/configsApi';
 import {
   getOfficerLocationsByRange,
   type OfficerLocation,
@@ -134,6 +136,12 @@ function getOfficerDisplayName(officer: OfficerLocation): string {
 
 export default function Dashboard() {
   const [routes, setRoutes] = useState<DashboardRoute[]>([]);
+  const [configs, setConfigs] = useState<DashboardConfig[]>([]);
+  const [selectedConfigId, setSelectedConfigId] = useState('');
+  const [selectedConfigScreens, setSelectedConfigScreens] = useState<
+    ConfigScreenSelection[]
+  >([]);
+
   const [counts, setCounts] = useState<DashboardCounts>({
     totalOfficers: 0,
     totalDivisions: 0,
@@ -157,10 +165,8 @@ export default function Dashboard() {
   );
 
   const [loading, setLoading] = useState(true);
+  const [configScreensLoading, setConfigScreensLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-
-  const trackingConfigName =
-    import.meta.env.VITE_TRACKING_CONFIG_NAME || 'cmb_pilot_config';
 
   const { googleMapsApiKey, isLoaded, loadError } = useGoogleMapsLoader();
 
@@ -170,17 +176,19 @@ export default function Dashboard() {
       setApiError(null);
 
       try {
-        const [routeData, countData] = await Promise.all([
+        const [routeData, countData, configData] = await Promise.all([
           getDashboardRoutes(),
           getDashboardCounts(),
+          getConfigs(),
         ]);
+
+        const enabledConfigs = configData.filter((config) => config.enabled);
+        const defaultConfig = enabledConfigs[0] || configData[0] || null;
 
         setRoutes(routeData);
         setCounts(countData);
-
-        if (routeData.length > 0) {
-          setSelectedRouteId(routeData[0].id);
-        }
+        setConfigs(configData);
+        setSelectedConfigId(defaultConfig?.id || '');
       } catch (error) {
         setApiError((error as Error).message);
       } finally {
@@ -191,9 +199,94 @@ export default function Dashboard() {
     loadDashboard();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadConfigScreens() {
+      if (!selectedConfigId) {
+        setSelectedConfigScreens([]);
+        setSelectedRouteId('');
+        setOfficerLocations([]);
+        return;
+      }
+
+      setConfigScreensLoading(true);
+      setApiError(null);
+      setOfficerLocations([]);
+      setOfficerLocationError(null);
+      setLastOfficerRefreshAt(null);
+
+      try {
+        const screens = await getSelectedScreens(selectedConfigId);
+
+        if (!cancelled) {
+          setSelectedConfigScreens(screens);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSelectedConfigScreens([]);
+          setSelectedRouteId('');
+          setApiError((error as Error).message);
+        }
+      } finally {
+        if (!cancelled) {
+          setConfigScreensLoading(false);
+        }
+      }
+    }
+
+    loadConfigScreens();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConfigId]);
+
+  const selectedConfig = useMemo(() => {
+    return configs.find((config) => config.id === selectedConfigId) || null;
+  }, [configs, selectedConfigId]);
+
+  const selectedTrackingConfigName = selectedConfig?.config_name || '';
+
+  const selectedScreenIntervalMap = useMemo(() => {
+    return new Map(
+      selectedConfigScreens.map((screen) => [
+        screen.route_allocation_id,
+        screen.interval_ms,
+      ])
+    );
+  }, [selectedConfigScreens]);
+
+  const configRoutes = useMemo(() => {
+    if (!selectedConfig) return [];
+
+    const selectedRouteIds = new Set(
+      selectedConfigScreens.map((screen) => screen.route_allocation_id)
+    );
+
+    return routes.filter((route) => selectedRouteIds.has(route.id));
+  }, [routes, selectedConfig, selectedConfigScreens]);
+
+  useEffect(() => {
+    if (configScreensLoading) return;
+
+    if (configRoutes.length === 0) {
+      setSelectedRouteId('');
+      return;
+    }
+
+    const selectedRouteExists = configRoutes.some(
+      (route) => route.id === selectedRouteId
+    );
+
+    if (!selectedRouteExists) {
+      setSelectedRouteId(configRoutes[0].id);
+    }
+  }, [configRoutes, configScreensLoading, selectedRouteId]);
+
   const selectedRoute = useMemo(() => {
-    return routes.find((route) => route.id === selectedRouteId) || null;
-  }, [routes, selectedRouteId]);
+    return configRoutes.find((route) => route.id === selectedRouteId) || null;
+  }, [configRoutes, selectedRouteId]);
 
   const midpoint = useMemo(() => {
     if (!selectedRoute) return defaultCenter;
@@ -221,21 +314,31 @@ export default function Dashboard() {
     : null;
 
   const officerRefreshMs = useMemo(() => {
-    const routeRefresh = Number(selectedRoute?.update_frequency_ms);
+    if (selectedRoute) {
+      const configInterval = Number(
+        selectedScreenIntervalMap.get(selectedRoute.id)
+      );
 
-    if (Number.isFinite(routeRefresh) && routeRefresh >= 5000) {
-      return routeRefresh;
+      if (Number.isFinite(configInterval) && configInterval >= 1000) {
+        return configInterval;
+      }
+
+      const routeRefresh = Number(selectedRoute.update_frequency_ms);
+
+      if (Number.isFinite(routeRefresh) && routeRefresh >= 5000) {
+        return routeRefresh;
+      }
     }
 
     return DEFAULT_OFFICER_REFRESH_MS;
-  }, [selectedRoute]);
+  }, [selectedRoute, selectedScreenIntervalMap]);
 
   useEffect(() => {
     let cancelled = false;
     let intervalId: number | undefined;
 
     async function loadOfficerLocations() {
-      if (!selectedRoute || !officerLayerEnabled) {
+      if (!selectedRoute || !selectedTrackingConfigName || !officerLayerEnabled) {
         setOfficerLocations([]);
         setOfficerLocationError(null);
         return;
@@ -250,7 +353,7 @@ export default function Dashboard() {
 
         const locations = await getOfficerLocationsByRange({
           reference: selectedRoute.screen_id,
-          configName: trackingConfigName,
+          configName: selectedTrackingConfigName,
           start: startSeconds,
           end: nowSeconds,
         });
@@ -274,7 +377,7 @@ export default function Dashboard() {
 
     loadOfficerLocations();
 
-    if (selectedRoute && officerLayerEnabled) {
+    if (selectedRoute && selectedTrackingConfigName && officerLayerEnabled) {
       intervalId = window.setInterval(loadOfficerLocations, officerRefreshMs);
     }
 
@@ -285,7 +388,12 @@ export default function Dashboard() {
         window.clearInterval(intervalId);
       }
     };
-  }, [selectedRoute, officerLayerEnabled, officerRefreshMs, trackingConfigName]);
+  }, [
+    selectedRoute,
+    selectedTrackingConfigName,
+    officerLayerEnabled,
+    officerRefreshMs,
+  ]);
 
   const latestOfficerLocations = useMemo(() => {
     const latestByOfficer = new Map<string, OfficerLocation>();
@@ -352,28 +460,58 @@ export default function Dashboard() {
 
         <div
           style={{
-            fontSize: '12px',
-            color: 'var(--text-secondary)',
-            textAlign: 'right',
-            lineHeight: 1.7,
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: '16px',
           }}
         >
-          <div>
-            Live traffic:{' '}
-            <strong style={{ color: trafficEnabled ? '#15803d' : '#b91c1c' }}>
-              {trafficEnabled ? 'ON' : 'OFF'}
-            </strong>
+          <div style={{ minWidth: '320px', textAlign: 'left' }}>
+            <label className="form-label">Dashboard Config</label>
+            <select
+              className="form-input"
+              value={selectedConfigId}
+              onChange={(event) => setSelectedConfigId(event.target.value)}
+            >
+              {configs.length === 0 ? (
+                <option value="">No configs found</option>
+              ) : (
+                configs.map((config) => (
+                  <option key={config.id} value={config.id}>
+                    {config.config_name} - {config.location}
+                    {!config.enabled ? ' (Disabled)' : ''}
+                  </option>
+                ))
+              )}
+            </select>
           </div>
 
-          <div>
-            Officer layer:{' '}
-            <strong
-              style={{
-                color: officerLayerEnabled ? '#15803d' : '#b91c1c',
-              }}
-            >
-              {officerLayerEnabled ? 'ON' : 'OFF'}
-            </strong>
+          <div
+            style={{
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              textAlign: 'right',
+              lineHeight: 1.7,
+              paddingBottom: '2px',
+              minWidth: '120px',
+            }}
+          >
+            <div>
+              Live traffic:{' '}
+              <strong style={{ color: trafficEnabled ? '#15803d' : '#b91c1c' }}>
+                {trafficEnabled ? 'ON' : 'OFF'}
+              </strong>
+            </div>
+
+            <div>
+              Officer layer:{' '}
+              <strong
+                style={{
+                  color: officerLayerEnabled ? '#15803d' : '#b91c1c',
+                }}
+              >
+                {officerLayerEnabled ? 'ON' : 'OFF'}
+              </strong>
+            </div>
           </div>
         </div>
       </div>
@@ -418,8 +556,10 @@ export default function Dashboard() {
           value={latestOfficerLocations.length}
           hint={
             selectedRoute
-              ? `Latest officer positions for ${selectedRoute.screen_id}`
-              : 'No route selected'
+              ? `Latest positions for ${selectedRoute.screen_id}`
+              : selectedConfig
+                ? 'No route selected'
+                : 'No config selected'
           }
         />
 
@@ -430,9 +570,13 @@ export default function Dashboard() {
         />
 
         <KpiCard
-          label="Active Routes"
-          value={counts.activeRoutes}
-          hint="Enabled route allocations"
+          label="Config Routes"
+          value={configRoutes.length}
+          hint={
+            selectedConfig
+              ? `Routes linked to ${selectedConfig.config_name}`
+              : 'No config selected'
+          }
         />
 
         <KpiCard
@@ -476,17 +620,51 @@ export default function Dashboard() {
               className="form-input"
               value={selectedRouteId}
               onChange={(event) => setSelectedRouteId(event.target.value)}
+              disabled={!selectedConfig || configRoutes.length === 0}
             >
-              {routes.length === 0 ? (
-                <option value="">No enabled routes found</option>
+              {!selectedConfig ? (
+                <option value="">Select a config first</option>
+              ) : configScreensLoading ? (
+                <option value="">Loading config screens...</option>
+              ) : configRoutes.length === 0 ? (
+                <option value="">No routes linked to this config</option>
               ) : (
-                routes.map((route) => (
+                configRoutes.map((route) => (
                   <option key={route.id} value={route.id}>
                     {route.screen_id} - {route.title}
                   </option>
                 ))
               )}
             </select>
+
+            {selectedConfig && (
+              <div
+                style={{
+                  marginTop: '10px',
+                  padding: '10px',
+                  border: '1px solid var(--border)',
+                  borderRadius: '12px',
+                  fontSize: '12px',
+                  color: 'var(--text-secondary)',
+                  lineHeight: 1.6,
+                }}
+              >
+                <div>
+                  <strong style={{ color: 'var(--text)' }}>Selected config:</strong>{' '}
+                  {selectedConfig.config_name}
+                </div>
+
+                <div>
+                  <strong style={{ color: 'var(--text)' }}>App:</strong>{' '}
+                  {selectedConfig.app_name}
+                </div>
+
+                <div>
+                  <strong style={{ color: 'var(--text)' }}>Version:</strong>{' '}
+                  {selectedConfig.config_version}
+                </div>
+              </div>
+            )}
 
             {selectedRoute && (
               <div
@@ -529,7 +707,7 @@ export default function Dashboard() {
 
                   <div>
                     <strong style={{ color: 'var(--text)' }}>Config:</strong>{' '}
-                    {trackingConfigName}
+                    {selectedTrackingConfigName || '-'}
                   </div>
 
                   <div>
@@ -640,7 +818,27 @@ export default function Dashboard() {
               </p>
             )}
 
-            {!officerLayerEnabled ? (
+            {!selectedConfig ? (
+              <p
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px',
+                  margin: 0,
+                }}
+              >
+                Select a config to load officer locations.
+              </p>
+            ) : !selectedRoute ? (
+              <p
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '13px',
+                  margin: 0,
+                }}
+              >
+                No route selected for this config.
+              </p>
+            ) : !officerLayerEnabled ? (
               <p
                 style={{
                   color: 'var(--text-secondary)',
@@ -658,7 +856,7 @@ export default function Dashboard() {
                   margin: 0,
                 }}
               >
-                No recent officer GPS events found for this screen.
+                No recent officer GPS events found for this screen and config.
               </p>
             ) : (
               <div
@@ -723,9 +921,13 @@ export default function Dashboard() {
             <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
               Loading map...
             </div>
+          ) : !selectedConfig ? (
+            <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
+              Select a config to load the dashboard.
+            </div>
           ) : !selectedRoute ? (
             <div style={{ padding: '20px', color: 'var(--text-secondary)' }}>
-              No route selected.
+              No route selected for this config.
             </div>
           ) : (
             <GoogleMap
