@@ -4,6 +4,7 @@ import {
   GoogleMap,
   Marker,
   Polyline,
+  useGoogleMap,
 } from '@react-google-maps/api';
 import { createRoute, getRoute, updateRoute } from '../../api/routesApi';
 import { getSchedules, type Schedule } from '../../api/schedulesApi';
@@ -17,11 +18,41 @@ import RoleGuard from '../../components/RoleGuard';
 import { useGoogleMapsLoader } from '../../hooks/useGoogleMapsLoader';
 
 const MAP_CENTER_DEFAULT = { lat: 6.9271, lng: 79.8612 };
+
 const MAP_CONTAINER_STYLE = {
   width: '100%',
-  height: '420px',
+  height: '100%',
   borderRadius: 'var(--r-md)',
 };
+
+function generateScreenUuid() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function TrafficLayerOverlay() {
+  const map = useGoogleMap();
+
+  useEffect(() => {
+    if (!map || !window.google) return;
+
+    const trafficLayer = new window.google.maps.TrafficLayer();
+    trafficLayer.setMap(map);
+
+    return () => {
+      trafficLayer.setMap(null);
+    };
+  }, [map]);
+
+  return null;
+}
 
 export default function RouteForm() {
   return (
@@ -39,7 +70,6 @@ interface Coords {
 }
 
 interface FormErrors {
-  screen_id?: string;
   title?: string;
   location_name?: string;
   schedule_id?: string;
@@ -56,7 +86,7 @@ function RouteFormInner() {
 
   const { isLoaded, loadError } = useGoogleMapsLoader();
 
-  const [screenId, setScreenId] = useState('');
+  const [screenId, setScreenId] = useState(() => generateScreenUuid());
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [locationName, setLocationName] = useState('colombo');
@@ -120,7 +150,7 @@ function RouteFormInner() {
       try {
         const route = await getRoute(id as any);
 
-        setScreenId(route.screen_id);
+        setScreenId(route.screen_id || generateScreenUuid());
         setTitle(route.title);
         setDescription(route.description ?? '');
         setLocationName(route.location_name);
@@ -213,10 +243,6 @@ function RouteFormInner() {
   function validate(): boolean {
     const e: FormErrors = {};
 
-    if (!screenId.trim()) {
-      e.screen_id = 'Screen ID is required.';
-    }
-
     if (!title.trim()) {
       e.title = 'Title is required.';
     }
@@ -267,7 +293,7 @@ function RouteFormInner() {
 
     try {
       const input = {
-        screen_id: screenId.trim(),
+        screen_id: screenId || generateScreenUuid(),
         title: title.trim(),
         description: description.trim() || null,
         location_name: locationName.trim(),
@@ -298,7 +324,7 @@ function RouteFormInner() {
 
       setApiError(
         message.includes('unique') || message.includes('duplicate')
-          ? 'A route with this Screen ID already exists.'
+          ? 'A route with this generated Screen ID already exists. Please try again.'
           : message
       );
     } finally {
@@ -322,9 +348,9 @@ function RouteFormInner() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
+            gridTemplateColumns: 'minmax(520px, 1fr) minmax(620px, 1fr)',
             gap: '20px',
-            alignItems: 'start',
+            alignItems: 'stretch',
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -343,20 +369,7 @@ function RouteFormInner() {
               </h3>
 
               <div className="form-grid-2">
-                <div className="form-field">
-                  <label className="form-label">Screen ID *</label>
-                  <input
-                    value={screenId}
-                    onChange={(event) => setScreenId(event.target.value)}
-                    placeholder="001"
-                    className={`form-input${errors.screen_id ? ' error' : ''}`}
-                  />
-                  {errors.screen_id && (
-                    <span className="form-error-msg">{errors.screen_id}</span>
-                  )}
-                </div>
-
-                <div className="form-field">
+                <div className="form-field form-grid-full">
                   <label className="form-label">Location *</label>
                   <input
                     value={locationName}
@@ -734,6 +747,8 @@ function RouteFormInner() {
               gap: '8px',
               position: 'sticky',
               top: '16px',
+              height: 'calc(100vh - 150px)',
+              minHeight: '640px',
             }}
           >
             <div
@@ -782,89 +797,94 @@ function RouteFormInner() {
             )}
 
             {!loadError && isLoaded && (
-              <GoogleMap
-                mapContainerStyle={{
-                  ...MAP_CONTAINER_STYLE,
-                  cursor: pickMode ? 'crosshair' : 'default',
-                }}
-                center={mapCenter}
-                zoom={zoomLevel}
-                onClick={handleMapClick}
-                options={{
-                  streetViewControl: false,
-                  mapTypeControl: false,
-                  fullscreenControl: false,
-                }}
-              >
-                {startCoords && (
-                  <Marker
-                    position={startCoords}
-                    label={{
-                      text: 'S',
-                      color: '#fff',
-                      fontWeight: 'bold',
-                    }}
-                    icon={{
-                      path: google.maps.SymbolPath.CIRCLE,
-                      scale: 10,
-                      fillColor: '#34C759',
-                      fillOpacity: 1,
-                      strokeColor: '#fff',
-                      strokeWeight: 2,
-                    }}
-                  />
-                )}
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <GoogleMap
+                  mapContainerStyle={{
+                    ...MAP_CONTAINER_STYLE,
+                    cursor: pickMode ? 'crosshair' : 'default',
+                  }}
+                  center={mapCenter}
+                  zoom={zoomLevel}
+                  onClick={handleMapClick}
+                  options={{
+                    streetViewControl: false,
+                    mapTypeControl: false,
+                    fullscreenControl: false,
+                  }}
+                >
+                  <TrafficLayerOverlay />
 
-                {endCoords && (
-                  <Marker
-                    position={endCoords}
-                    label={{
-                      text: 'E',
-                      color: '#fff',
-                      fontWeight: 'bold',
-                    }}
-                    icon={{
-                      path: google.maps.SymbolPath.CIRCLE,
-                      scale: 10,
-                      fillColor: '#FF3B30',
-                      fillOpacity: 1,
-                      strokeColor: '#fff',
-                      strokeWeight: 2,
-                    }}
-                  />
-                )}
+                  {startCoords && (
+                    <Marker
+                      position={startCoords}
+                      label={{
+                        text: 'S',
+                        color: '#fff',
+                        fontWeight: 'bold',
+                      }}
+                      icon={{
+                        path: google.maps.SymbolPath.CIRCLE,
+                        scale: 10,
+                        fillColor: '#34C759',
+                        fillOpacity: 1,
+                        strokeColor: '#fff',
+                        strokeWeight: 2,
+                      }}
+                    />
+                  )}
 
-                {midpoint && (
-                  <Marker
-                    position={midpoint}
-                    icon={{
-                      path: google.maps.SymbolPath.CIRCLE,
-                      scale: 7,
-                      fillColor: '#0071E3',
-                      fillOpacity: 1,
-                      strokeColor: '#fff',
-                      strokeWeight: 2,
-                    }}
-                  />
-                )}
+                  {endCoords && (
+                    <Marker
+                      position={endCoords}
+                      label={{
+                        text: 'E',
+                        color: '#fff',
+                        fontWeight: 'bold',
+                      }}
+                      icon={{
+                        path: google.maps.SymbolPath.CIRCLE,
+                        scale: 10,
+                        fillColor: '#FF3B30',
+                        fillOpacity: 1,
+                        strokeColor: '#fff',
+                        strokeWeight: 2,
+                      }}
+                    />
+                  )}
 
-                {polylinePath.length === 2 && (
-                  <Polyline
-                    path={polylinePath}
-                    options={{
-                      strokeColor: '#0071E3',
-                      strokeWeight: 3,
-                      strokeOpacity: 0.8,
-                    }}
-                  />
-                )}
-              </GoogleMap>
+                  {midpoint && (
+                    <Marker
+                      position={midpoint}
+                      icon={{
+                        path: google.maps.SymbolPath.CIRCLE,
+                        scale: 7,
+                        fillColor: '#0071E3',
+                        fillOpacity: 1,
+                        strokeColor: '#fff',
+                        strokeWeight: 2,
+                      }}
+                    />
+                  )}
+
+                  {polylinePath.length === 2 && (
+                    <Polyline
+                      path={polylinePath}
+                      options={{
+                        strokeColor: '#0071E3',
+                        strokeWeight: 3,
+                        strokeOpacity: 0.8,
+                      }}
+                    />
+                  )}
+                </GoogleMap>
+              </div>
             )}
 
             {!loadError && !isLoaded && (
               <div
                 style={{
-                  height: '420px',
+                  flex: 1,
+                  minHeight: 0,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
